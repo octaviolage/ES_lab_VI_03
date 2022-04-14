@@ -5,8 +5,7 @@ from time import sleep
 MAX_QUERY_ATTEMPTS = 10
 GITHUB_INDEX = 0
 GITHUB_TOKEN = [
-    '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',
-    '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'
+    # Add your tokens here
     ]
 
 def query_runner(query: str, attemp=1) -> dict:
