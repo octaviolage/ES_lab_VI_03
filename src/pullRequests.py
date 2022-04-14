@@ -1,4 +1,5 @@
-from datetime import datetime as dt
+from datetime import datetime as dt, timedelta
+import multiprocessing as mul
 
 import pandas as pd
 
@@ -7,68 +8,65 @@ from src.utils import query_runner
 
 
 OUTPUT = 'out/pullRequests.csv'
-
-def filter_review_time(x):
-    """
-    This function filters pull requests that have at least an hour in review.
-    """
-    print(type(x))
-    exit(0)
-    created_at = dt.strptime(x['createdAt'], '%Y-%m-%dT%H:%M:%SZ')
-    closed_at = dt.strptime(x['closedAt'], '%Y-%m-%dT%H:%M:%SZ')
-    return (closed_at - created_at).total_seconds() > 3600
+COLUMNS = [
+    'nameWithOwner', 'id', 'title', 'state', 'createdAt', 'closedAt',
+    'changedFiles', 'additions', 'deletions', 'reviews', 'body',
+    'participants', 'comments'
+    ]
 
 
-def get_pull_requests(nameWithOwner: str, output: pd.DataFrame, token: str):
+def get_pull_requests(nameWithOwner: str):
     """
     This function returns the pull requests data of a repository.
     """
     after = 'null'
+    prs = []
     owner, name = nameWithOwner.split('/')
     while True:
         query = queries.pull_requests.replace('{owner}', owner)\
                                      .replace('{name}', name)\
                                      .replace('{after}', after)
-        results = query_runner(query, token)
+        results = query_runner(query)
+        if not results: continue
         for pr in results['data']['repository']['pullRequests']['nodes']:
-            output = output.append({
-                'nameWithOwner': nameWithOwner,
-                'id': pr['id'],
-                'title': pr['title'],
-                'state': pr['state'],
-                'createdAt': pr['createdAt'],
-                'closedAt': pr['closedAt'],
-                'changedFiles': pr['changedFiles'],
-                'additions': pr['additions'],
-                'deletions': pr['deletions'],
-                'reviews': pr['reviews']['totalCount'],
-                'body': pr['body'],
-                'participants': pr['participants']['totalCount'],
-                'comments': pr['comments']['totalCount']
-            }, ignore_index=True)
+            prs.append((
+                nameWithOwner,
+                pr['id'],
+                pr['title'],
+                pr['state'],
+                pr['createdAt'],
+                pr['closedAt'],
+                pr['changedFiles'],
+                pr['additions'],
+                pr['deletions'],
+                pr['reviews']['totalCount'],
+                len(pr['body']),
+                pr['participants']['totalCount'],
+                pr['comments']['totalCount']
+            ))
         after = '"' + results['data']['repository']['pullRequests']['pageInfo']['endCursor'] + '"'
         if not results['data']['repository']['pullRequests']['pageInfo']['hasNextPage']:
             break
 
+    output = pd.DataFrame(prs, columns=COLUMNS)
     # Filter pull requests that have at least a review.
     output = output[output['reviews'] > 0]
+    # Add the review time spent.
+    output['hours_spent'] = output.apply(lambda x: (dt.strptime(x['closedAt'], '%Y-%m-%dT%H:%M:%SZ') - dt.strptime(x['createdAt'], '%Y-%m-%dT%H:%M:%SZ')), axis=1)
+    output['hours_spent'] = output['hours_spent'].apply(lambda x: x.days * 24 + x.seconds / 3600)
     # Filter pull requests that have more than an hour to review.
-    output = output[output.apply(filter_review_time, axis=1)]
+    output = output[output['hours_spent'] >= 1]
     return output
 
 
-def generate_csv(input: str, token: str):
+def generate_csv(input_path: str):
     """
     This function generates a CSV file with the selected pull requests from a file.
     """
-    input = pd.read_csv(input)
-    output = pd.DataFrame(columns=['nameWithOwner', 'id', 'title', 'state', 'createdAt',
-        'closedAt', 'changedFiles', 'additions', 'deletions', 'reviews', 'body',
-        'participants', 'comments'])
-    for index, row in input.iterrows():
-       get_pull_requests(row['nameWithOwner'], output, token)
+    input = pd.read_csv(input_path)
+    repositories = input['nameWithOwner'].unique().tolist()
+    pool = mul.Pool(10)
+    results = pool.map(get_pull_requests, repositories)
+    output = pd.concat(results)
     output.to_csv(OUTPUT, index=False)
     return OUTPUT
-
-
-
